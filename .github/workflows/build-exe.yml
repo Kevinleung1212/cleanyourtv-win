@@ -1,4 +1,4 @@
-name: Build Windows Standalone EXE
+name: Build Launcher APK and Windows Standalone EXE
 
 on:
   push:
@@ -6,51 +6,72 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-windows:
+  build-all:
     runs-on: windows-latest
 
     steps:
-      - name: 1. 檢出程式碼 (Checkout Repository)
+      - name: 1. 檢出你的主專案程式碼 (main.py)
         uses: actions/checkout@v4
 
-      - name: 2. 配置 Python 3.11 環境
+      - name: 2. 檢出 Gathin23/cleanyourtv 原專案源碼至設定目錄
+        uses: actions/checkout@v4
+        with:
+          repository: Gathin23/cleanyourtv
+          ref: c5d75e8e8071d6545e78ccbb6b4a303774f2e048
+          path: cleanyourtv-src
+
+      - name: 3. 配置 JDK 17 環境 (編譯 Android APK 必備)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: 4. 編譯 Gathin23/cleanyourtv/launcher 為可安裝 APK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Write-Host "正在進入 launcher 目錄並使用 Gradle 編譯 APK..."
+          Push-Location "cleanyourtv-src/launcher"
+          
+          # 若原倉庫包含 gradlew.bat 則直接呼叫，否則使用系統內建 gradle
+          if (Test-Path "./gradlew.bat") {
+            ./gradlew.bat assembleDebug --no-daemon
+          } else {
+            gradle assembleDebug --no-daemon
+          }
+          Pop-Location
+          
+          # 建立 assets 目錄並提取編譯好的已簽名 APK
+          New-Item -ItemType Directory -Force -Path "assets" | Out-Null
+          $apkFile = Get-ChildItem -Path "cleanyourtv-src/launcher" -Filter "*-debug.apk" -Recurse | Select-Object -First 1
+          
+          if ($apkFile) {
+            Write-Host "[+] 成功編譯 Launcher APK: $($apkFile.FullName)"
+            Copy-Item -Path $apkFile.FullName -Destination "assets/launcher.apk" -Force
+          } else {
+            throw "找不到編譯輸出的 APK 檔案！"
+          }
+
+      - name: 5. 配置 Python 3.11 環境
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: 3. 下載 Google 官方 ADB 與 Launcher APK
+      - name: 6. 下載 Google 官方 ADB 工具
         shell: pwsh
         run: |
           $ProgressPreference = 'SilentlyContinue'
-          Write-Host "1. 正在下載 Google Platform-Tools (ADB)..."
+          Write-Host "正在下載 Google Platform-Tools (ADB)..."
           Invoke-WebRequest -Uri "https://dl.google.com/android/repository/platform-tools-latest-windows.zip" -OutFile "platform-tools.zip" -UseBasicParsing
           Expand-Archive -Path "platform-tools.zip" -DestinationPath "." -Force
-          
-          Write-Host "2. 正在準備 assets 目錄與 Launcher APK..."
-          New-Item -ItemType Directory -Force -Path "assets" | Out-Null
-          if (-not (Test-Path "assets/launcher.apk")) {
-            try {
-              $headers = @{
-                "User-Agent" = "GitHubActions"
-                "Authorization" = "Bearer ${{ secrets.GITHUB_TOKEN }}"
-              }
-              $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/spocky/miproja1/releases/latest" -Headers $headers
-              $apkAsset = $rel.assets | Where-Object { $_.name -match "\.apk$" } | Select-Object -First 1
-              if ($apkAsset) {
-                Invoke-WebRequest -Uri $apkAsset.browser_download_url -OutFile "assets/launcher.apk" -UseBasicParsing
-              } else { throw "No APK found" }
-            } catch {
-              Set-Content -Path "assets/launcher.apk" -Value "placeholder"
-            }
-          }
 
-      - name: 4. 安裝 PyInstaller 與 macOS GUI 庫 (CustomTkinter)
+      - name: 7. 安裝 PyInstaller 與 CustomTkinter
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
           pip install pyinstaller customtkinter packaging
 
-      - name: 5. 封裝為 macOS 風格獨立視窗程式 (無黑窗 GUI)
+      - name: 8. 封裝為內嵌原生 Launcher 的獨立 EXE
         shell: pwsh
         run: |
           pyinstaller --noconfirm --onefile --windowed `
@@ -62,9 +83,11 @@ jobs:
             --add-data "assets/launcher.apk;assets" `
             main.py
 
-      - name: 6. 上傳編譯完成的 EXE 構建產物 (Artifacts)
+      - name: 9. 上傳編譯完成的 APK 與 EXE 構建產物 (Artifacts)
         uses: actions/upload-artifact@v4
         with:
-          name: CleanYourTV-macOS-GUI-Standalone
-          path: dist/CleanYourTV_macOS_GUI.exe
+          name: CleanYourTV-Full-Bundle
+          path: |
+            dist/CleanYourTV_macOS_GUI.exe
+            assets/launcher.apk
           if-no-files-found: error
