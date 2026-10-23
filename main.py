@@ -8,70 +8,69 @@ import subprocess
 import urllib.request
 import webbrowser
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, filedialog
 import customtkinter as ctk
 
-# ==================== 路徑與環境配置 ====================
+# ==================== 路徑與雙桌面資源配置 ====================
 def get_resource_path(relative_path):
     if hasattr(sys, '_MEIPASS'):
         return os.path.join(sys._MEIPASS, relative_path)
     return os.path.join(os.path.abspath("."), relative_path)
 
 ADB_BIN = get_resource_path(os.path.join("platform-tools", "adb.exe"))
-LAUNCHER_APK = get_resource_path(os.path.join("assets", "launcher.apk"))
-LAUNCHER_PKG_FILE = get_resource_path(os.path.join("assets", "launcher_pkg.txt"))
+CLEAN_APK = get_resource_path(os.path.join("assets", "cleanyourtv_launcher.apk"))
+AERIAL_APK = get_resource_path(os.path.join("assets", "aerial_launcher.apk"))
+CLEAN_PKG_FILE = get_resource_path(os.path.join("assets", "cleanyourtv_pkg.txt"))
+AERIAL_PKG_FILE = get_resource_path(os.path.join("assets", "aerial_pkg.txt"))
+
 BASE_DIR = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, 'frozen', False) else __file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "ai_config.json")
 
-# 讀取編譯階段自動提取的 Gathin23/cleanyourtv/launcher 真實包名
-DYNAMIC_LAUNCHER_PKG = "com.cleanyourtv.launcher"
-if os.path.exists(LAUNCHER_PKG_FILE):
-    try:
-        with open(LAUNCHER_PKG_FILE, "r", encoding="utf-8") as f:
-            read_pkg = f.read().strip()
-            if read_pkg:
-                DYNAMIC_LAUNCHER_PKG = read_pkg
-    except Exception:
-        pass
+def _read_pkg_file(path, default_val):
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                val = f.read().strip()
+                if val:
+                    return val
+        except Exception:
+            pass
+    return default_val
 
+CLEAN_LAUNCHER_PKG = _read_pkg_file(CLEAN_PKG_FILE, "com.cleanyourtv.launcher")
+AERIAL_LAUNCHER_PKG = _read_pkg_file(AERIAL_PKG_FILE, "me.qust.aerial")
+
+# 將兩款新桌面的所有可能包名全部納入保護集合
 CUSTOM_LAUNCHER_PKGS = {
-    DYNAMIC_LAUNCHER_PKG,
+    CLEAN_LAUNCHER_PKG,
+    AERIAL_LAUNCHER_PKG,
     "com.cleanyourtv.launcher",
     "dev.gathin.cleanyourtv",
-    "com.gathin.cleanyourtv",
-    "com.example.launcher",
+    "me.qust.aerial",
+    "com.pengchujin.aerial",
+    "com.aerial.tv",
     "com.spocky.projengmenu"
 }
 
-# 原廠桌面核心套件清單 (用於強制接管與還原)
 STOCK_LAUNCHER_PKGS = [
-    "com.google.android.tungsten.setupwraith",     # 必須第一個處理：Google TV 設定與桌面守護進程
-    "com.google.android.apps.tv.launcherx",        # Google TV (Android 11~14) 主桌面核心包名
-    "com.google.android.tvlauncher",               # Android TV 傳統主桌面
-    "com.google.android.tvrecommendations",        # 電視推薦流服務
-    "com.google.android.leanbacklauncher",         # 舊版 Leanback 桌面
+    "com.google.android.tungsten.setupwraith",
+    "com.google.android.apps.tv.launcherx",
+    "com.google.android.tvlauncher",
+    "com.google.android.tvrecommendations",
+    "com.google.android.leanbacklauncher",
     "com.google.android.leanbacklauncher.recommendations",
-    "com.tcl.cyberui",                             # TCL 桌面
-    "com.mitv.tvhome"                              # 小米桌面
+    "com.tcl.cyberui",
+    "com.mitv.tvhome"
 ]
 
-# ==================== 驗證攔截包與完整原方案禁用列表 ====================
 KNOWN_INSTALL_BLOCKERS = [
-    "com.tcl.apkverifier",
-    "com.tcl.security",
-    "com.tcl.guard",
-    "com.tcl.appmarket2.verifier",
-    "com.ffalcon.apkverifier",
-    "com.hisense.tv.security",
-    "com.hisense.appverifier",
-    "com.miui.guardprovider",
-    "com.xiaomi.mitv.security",
-    "com.miui.securitycenter",
-    "com.skyworth.security",
-    "com.coocaa.security",
-    "com.konka.security",
-    "com.changhong.security",
-    "com.google.android.packageinstaller.verifier"
+    "com.tcl.apkverifier", "com.tcl.security", "com.tcl.guard",
+    "com.tcl.appmarket2.verifier", "com.ffalcon.apkverifier",
+    "com.hisense.tv.security", "com.hisense.appverifier",
+    "com.miui.guardprovider", "com.xiaomi.mitv.security",
+    "com.miui.securitycenter", "com.skyworth.security",
+    "com.coocaa.security", "com.konka.security",
+    "com.changhong.security", "com.google.android.packageinstaller.verifier"
 ]
 
 VERIFIER_REGEX = re.compile(
@@ -79,21 +78,17 @@ VERIFIER_REGEX = re.compile(
     re.IGNORECASE
 )
 
-# 原方案完整禁用套件清單 (已加入 com.google.android.apps.tv.launcherx)
 DEFAULT_BLOATWARE = [
-    # --- Google TV / Android TV 原廠桌面與推薦系統 (優先停用) ---
-    "com.google.android.tungsten.setupwraith",     # Google TV 桌面守護與強制導引服務
-    "com.google.android.apps.tv.launcherx",        # Google TV (Android 14) 原裝主桌面
-    "com.google.android.tvlauncher",               # Android TV 原裝主桌面
-    "com.google.android.tvrecommendations",        # 首頁廣告與推薦橫條
+    "com.google.android.tungsten.setupwraith",
+    "com.google.android.apps.tv.launcherx",
+    "com.google.android.tvlauncher",
+    "com.google.android.tvrecommendations",
     "com.google.android.leanbacklauncher",
     "com.google.android.leanbacklauncher.recommendations",
-
-    # --- Google 預裝非必要系統肥大套件與遙測服務 ---
-    "com.google.android.videos",                   # Google TV Play Movies
+    "com.google.android.videos",
     "com.google.android.music",
-    "com.google.android.youtube.tvmusic",          # YouTube Music
-    "com.google.android.play.games",               # Google Play Games
+    "com.google.android.youtube.tvmusic",
+    "com.google.android.play.games",
     "com.google.android.feedback",
     "com.google.android.partnersetup",
     "com.google.android.syncadapters.calendar",
@@ -101,9 +96,12 @@ DEFAULT_BLOATWARE = [
     "com.android.dreams.basic",
     "com.android.printspooler",
     "com.android.bips",
-    
-
-    # --- Sony / TCL / 海信 / 小米 專屬預裝與桌面 ---
+    "com.amazon.amazonvideo.livingroom",
+    "com.netflix.ninja",
+    "com.disney.disneyplus",
+    "tv.pluto.android",
+    "com.tubitv",
+    "com.apple.atve.androidtv.appletv",
     "com.sony.dtv.osat.music",
     "com.sony.dtv.youview",
     "com.sony.dtv.braviapcore",
@@ -126,17 +124,11 @@ DEFAULT_BLOATWARE = [
 ]
 
 CORE_WHITELIST = {
-    "android",
-    "com.android.systemui",
-    "com.android.settings",
-    "com.android.providers.settings",
-    "com.google.android.gms",
-    "com.google.android.gsf",
-    "com.android.vending",
-    "com.android.packageinstaller",
-    "com.google.android.packageinstaller",
-    "com.android.inputmethod.latin",
-    "com.google.android.inputmethod.latin",
+    "android", "com.android.systemui", "com.android.settings",
+    "com.android.providers.settings", "com.google.android.gms",
+    "com.google.android.gsf", "com.android.vending",
+    "com.android.packageinstaller", "com.google.android.packageinstaller",
+    "com.android.inputmethod.latin", "com.google.android.inputmethod.latin",
     "com.google.android.katniss"
 } | CUSTOM_LAUNCHER_PKGS
 
@@ -180,17 +172,17 @@ ctk.set_default_color_theme("blue")
 class MacOSTVCleanerApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("CleanYourTV Pro — macOS Edition (Android 14 LauncherX 專項支援)")
-        self.geometry("1020x660")
-        self.minsize(940, 620)
+        self.title("CleanYourTV Pro — 雙桌面引擎版 (Aerial TV + CleanYourTV)")
+        self.geometry("1040x680")
+        self.minsize(960, 640)
         self.configure(fg_color="#1E1E1E")
 
         self.cfg = load_config()
         self.device_id = None
-        self.installed_launcher_pkg = DYNAMIC_LAUNCHER_PKG
+        self.custom_apk_path = ""
 
         self._build_layout()
-        self.log(f"系統就緒。內嵌原生桌面保護包名: {self.installed_launcher_pkg}")
+        self.log(f"系統就緒。已內嵌雙桌面引擎：Aerial TV ({AERIAL_LAUNCHER_PKG}) & CleanYourTV ({CLEAN_LAUNCHER_PKG})")
         threading.Thread(target=lambda: run_adb(["start-server"]), daemon=True).start()
 
     # -------------------- UI 佈局建構 --------------------
@@ -215,14 +207,14 @@ class MacOSTVCleanerApp(ctk.CTk):
         ).pack(anchor="w", padx=20, pady=(4, 2))
 
         ctk.CTkLabel(
-            self.sidebar, text="Android 14 / Google TV 專版",
+            self.sidebar, text="Aerial TV / Google TV 雙引擎",
             font=ctk.CTkFont(size=12), text_color="#8E8E93"
         ).pack(anchor="w", padx=20, pady=(0, 18))
 
         self.nav_buttons = {}
         nav_items = [
             ("connect", "📡  設備連線與配對"),
-            ("clean",   "🍎  突破限制與換桌面"),
+            ("clean",   "🍎  選擇桌面與系統精簡"),
             ("ai",      "🤖  豆包 / WorkBuddy 分析"),
             ("restore", "🛡️  一鍵救磚與還原")
         ]
@@ -259,7 +251,7 @@ class MacOSTVCleanerApp(ctk.CTk):
             "restore": self._create_restore_page()
         }
 
-        log_card = ctk.CTkFrame(self.right_container, corner_radius=12, fg_color="#141414", height=185)
+        log_card = ctk.CTkFrame(self.right_container, corner_radius=12, fg_color="#141414", height=180)
         log_card.grid(row=1, column=0, sticky="ew", pady=(12, 0))
         log_card.grid_propagate(False)
         log_card.grid_columnconfigure(0, weight=1)
@@ -337,7 +329,7 @@ class MacOSTVCleanerApp(ctk.CTk):
 
         return frame
 
-    # -------------------- 頁面 2：突破限制 + 原生 Apple TV 桌面 + 強制替換 LauncherX --------------------
+    # -------------------- 頁面 2：手動選擇桌面 (Aerial TV / CleanYourTV) + 系統精簡 --------------------
     def _create_clean_page(self):
         frame = ctk.CTkFrame(self.pages_frame, fg_color="transparent")
         frame.grid_columnconfigure((0, 1), weight=1)
@@ -346,39 +338,53 @@ class MacOSTVCleanerApp(ctk.CTk):
         left_card = ctk.CTkFrame(frame, corner_radius=14, fg_color="#2C2C2E")
         left_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=4)
 
-        ctk.CTkLabel(left_card, text="🛡️ 階段一：解除第三方安裝攔截", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=16, pady=(14, 4))
+        ctk.CTkLabel(left_card, text="🍎 步驟 1：選擇要安裝的 tvOS 風格桌面", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=16, pady=(14, 4))
+
+        self.launcher_choice_seg = ctk.CTkSegmentedButton(
+            left_card,
+            values=["Aerial TV (國產電視首選)", "CleanYourTV (原生極簡)", "自訂本地 APK"],
+            command=self._on_launcher_choice_changed
+        )
+        self.launcher_choice_seg.pack(fill="x", padx=16, pady=6)
+        self.launcher_choice_seg.set("Aerial TV (國產電視首選)")
+
+        self.launcher_desc_lbl = ctk.CTkLabel(
+            left_card,
+            text="🌟 pengchujin/aerial-tv：專為小米/TCL/海信等國產電視設計，\n帶必應每日桌布、Apple 航拍屏保、信號源控制中心與開機自動接管守護。",
+            font=ctk.CTkFont(size=11), text_color="#30D158", justify="left"
+        )
+        self.launcher_desc_lbl.pack(anchor="w", padx=16, pady=(2, 8))
+
+        # 單獨安裝桌面按鈕 (不禁用系統應用，適合喜歡 Aerial 溫和接管模式的用戶)
+        ctk.CTkButton(
+            left_card, text="📥 僅解鎖安裝所選桌面 + 授權開機自動接管 (不停用系統App)", height=36,
+            fg_color="#30D158", text_color="#000000", hover_color="#28B84C", font=ctk.CTkFont(size=12, weight="bold"),
+            command=lambda: threading.Thread(target=self.worker_install_selected_launcher_only, daemon=True).start()
+        ).pack(fill="x", padx=16, pady=(2, 10))
+
+        ctk.CTkLabel(left_card, text="🧹 步驟 2：深度精簡與強制替換原裝桌面", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=16, pady=(4, 4))
         ctk.CTkLabel(
             left_card,
-            text="關閉系統驗證鎖 (package_verifier_enable=0 等 3 項)\n並自動掃描禁用 TCL/海信/小米等內建安裝攔截器。",
+            text="自動解除 TCL/海信/小米安裝攔截 ➔ 安裝上方所選桌面 ➔\n停用右側列出的肥大軟體 ➔ 強制停用 Google TV LauncherX / 原廠桌面。",
             font=ctk.CTkFont(size=11), text_color="#AEAEB2", justify="left"
         ).pack(anchor="w", padx=16, pady=(0, 8))
 
         ctk.CTkButton(
-            left_card, text="🔓 1. 單獨執行：解除安裝限制與驗證包", height=34,
-            fg_color="#FF9F0A", text_color="#000000", hover_color="#E08900", font=ctk.CTkFont(weight="bold"),
-            command=lambda: threading.Thread(target=self.worker_bypass_verification, daemon=True).start()
-        ).pack(fill="x", padx=16, pady=(0, 12))
-
-        ctk.CTkLabel(left_card, text="🍎 階段二：強制停用 Google TV LauncherX 並換桌面", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=16, pady=(4, 4))
-        ctk.CTkLabel(
-            left_card,
-            text=f"• 自動解析並將 [{self.installed_launcher_pkg}] 設為 Android 14 首選 HOME 角色\n"
-                 "• 強制停用並卸載當前用戶的 com.google.android.apps.tv.launcherx\n"
-                 "• 徹底解決雙桌面並存與原裝桌面搶奪優先權問題",
-            font=ctk.CTkFont(size=11), text_color="#AEAEB2", justify="left"
-        ).pack(anchor="w", padx=16, pady=(0, 10))
-
-        ctk.CTkButton(
-            left_card, text="✨ 2. 一鍵全自動：解鎖 + 換 Apple TV 桌面 + 停用肥大應用", height=40,
+            left_card, text="✨ 一鍵全自動：解鎖 + 安裝所選桌面 + 停用右側肥大清單", height=40,
             fg_color="#0A84FF", font=ctk.CTkFont(size=13, weight="bold"),
             command=lambda: threading.Thread(target=self.worker_full_clean, daemon=True).start()
         ).pack(fill="x", padx=16, pady=(2, 8))
 
+        sub_btn_row = ctk.CTkFrame(left_card, fg_color="transparent")
+        sub_btn_row.pack(fill="x", padx=16, pady=(0, 12))
         ctk.CTkButton(
-            left_card, text="🎯 3. 專項修復：強制停用原裝 LauncherX 並鎖定新桌面優先權", height=34,
-            fg_color="#5E5CE6", hover_color="#4B49B8", font=ctk.CTkFont(size=12, weight="bold"),
+            sub_btn_row, text="🔓 僅解除安裝攔截", height=32, fg_color="#FF9F0A", text_color="#000000", hover_color="#E08900",
+            command=lambda: threading.Thread(target=self.worker_bypass_verification, daemon=True).start()
+        ).pack(side="left", fill="x", expand=True, padx=(0, 4))
+        ctk.CTkButton(
+            sub_btn_row, text="🎯 強制封鎖原裝 LauncherX", height=32, fg_color="#5E5CE6", hover_color="#4B49B8",
             command=lambda: threading.Thread(target=self.worker_force_takeover_launcher, daemon=True).start()
-        ).pack(fill="x", padx=16, pady=(0, 14))
+        ).pack(side="left", fill="x", expand=True, padx=(4, 0))
 
         right_card = ctk.CTkFrame(frame, corner_radius=14, fg_color="#2C2C2E")
         right_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0), pady=4)
@@ -392,6 +398,26 @@ class MacOSTVCleanerApp(ctk.CTk):
         self.default_bloat_textbox.insert("1.0", "\n".join(DEFAULT_BLOATWARE))
 
         return frame
+
+    def _on_launcher_choice_changed(self, val):
+        if "Aerial TV" in val:
+            self.launcher_desc_lbl.configure(
+                text="🌟 pengchujin/aerial-tv：專為小米/TCL/海信等國產電視設計，\n帶必應每日桌布、Apple 航拍屏保、信號源控制中心與開機自動接管守護。",
+                text_color="#30D158"
+            )
+        elif "CleanYourTV" in val:
+            self.launcher_desc_lbl.configure(
+                text="🍎 Gathin23/cleanyourtv：專為海外版 Android TV / Google TV 設計，\n極簡純粹的 Apple TV 卡片網格佈局，體積極小。",
+                text_color="#0A84FF"
+            )
+        else:
+            path = filedialog.askopenfilename(title="選擇自訂 Launcher APK", filetypes=[("APK Files", "*.apk")])
+            if path:
+                self.custom_apk_path = path
+                self.launcher_desc_lbl.configure(text=f"📂 已選擇自訂 APK:\n{os.path.basename(path)}", text_color="#FF9F0A")
+            else:
+                self.launcher_choice_seg.set("Aerial TV (國產電視首選)")
+                self._on_launcher_choice_changed("Aerial TV (國產電視首選)")
 
     # -------------------- 頁面 3：豆包 / WorkBuddy AI 分析 --------------------
     def _create_ai_page(self):
@@ -421,434 +447,4 @@ class MacOSTVCleanerApp(ctk.CTk):
         self.api_model_entry.insert(0, self.cfg.get("model", ""))
 
         self.api_key_entry = ctk.CTkEntry(left_card, placeholder_text="API Key (Bearer Token)", show="*", height=32)
-        self.api_key_entry.pack(fill="x", padx=16, pady=4)
-        self.api_key_entry.insert(0, self.cfg.get("api_key", ""))
-
-        ctk.CTkButton(left_card, text="1. 讀取電視套件並發送給 AI 分析", fg_color="#0A84FF", height=36, command=self.action_start_ai_analysis).pack(fill="x", padx=16, pady=(10, 6))
-
-        right_card = ctk.CTkFrame(frame, corner_radius=14, fg_color="#2C2C2E")
-        right_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0), pady=4)
-        right_card.grid_rowconfigure(1, weight=1)
-        right_card.grid_columnconfigure(0, weight=1)
-
-        ctk.CTkLabel(right_card, text="📋 AI 建議停用清單 (已自動過濾保護新桌面)", font=ctk.CTkFont(size=13, weight="bold")).grid(row=0, column=0, sticky="w", padx=16, pady=(14, 4))
-
-        self.ai_pkg_textbox = ctk.CTkTextbox(right_card, fg_color="#1C1C1E", text_color="#EBEBF5", font=ctk.CTkFont(family="Consolas", size=12))
-        self.ai_pkg_textbox.grid(row=1, column=0, sticky="nsew", padx=16, pady=6)
-
-        ctk.CTkButton(right_card, text="⚡ 2. 一鍵停用上方列出的所有套件", fg_color="#FF453A", hover_color="#D70015", height=36, font=ctk.CTkFont(weight="bold"), command=self.action_apply_ai_disable).grid(row=2, column=0, sticky="ew", padx=16, pady=(4, 14))
-
-        self._toggle_ai_mode_ui(self.ai_mode_seg.get())
-        return frame
-
-    def _toggle_ai_mode_ui(self, val):
-        if "網頁" in val:
-            self.web_url_entry.configure(state="normal")
-            self.api_url_entry.configure(state="disabled")
-            self.api_model_entry.configure(state="disabled")
-            self.api_key_entry.configure(state="disabled")
-        else:
-            self.web_url_entry.configure(state="disabled")
-            self.api_url_entry.configure(state="normal")
-            self.api_model_entry.configure(state="normal")
-            self.api_key_entry.configure(state="normal")
-
-    # -------------------- 頁面 4：一鍵救磚與原廠還原 --------------------
-    def _create_restore_page(self):
-        frame = ctk.CTkFrame(self.pages_frame, fg_color="transparent")
-        frame.grid_columnconfigure(0, weight=1)
-
-        card = ctk.CTkFrame(frame, corner_radius=14, fg_color="#2C2C2E")
-        card.grid(row=0, column=0, sticky="nsew", pady=4)
-
-        ctk.CTkLabel(card, text="🛡️ 一鍵恢復原廠狀態 (救磚還原)", font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w", padx=20, pady=(18, 6))
-        ctk.CTkLabel(
-            card,
-            text="點擊下方按鈕將自動執行：\n"
-                 "1. 重新安裝並啟用 (install-existing + pm enable) 原廠 Google TV LauncherX 與所有被停用的系統組件。\n"
-                 f"2. 若勾選下方選項，將同步卸載 Gathin23 原生 Apple TV 桌面 ({self.installed_launcher_pkg}) 並切回原廠首頁。",
-            font=ctk.CTkFont(size=12), text_color="#AEAEB2", justify="left"
-        ).pack(anchor="w", padx=20, pady=(0, 14))
-
-        self.uninstall_launcher_var = ctk.BooleanVar(value=True)
-        ctk.CTkCheckBox(card, text=f"還原為原廠桌面時，一併卸載替換的 Apple TV 桌面 ({self.installed_launcher_pkg})", variable=self.uninstall_launcher_var).pack(anchor="w", padx=20, pady=8)
-
-        ctk.CTkButton(
-            card, text="🔄 立即恢復電視所有原廠應用與 Google TV 預設桌面", height=42,
-            fg_color="#30D158", text_color="#000000", hover_color="#28B84C", font=ctk.CTkFont(size=14, weight="bold"),
-            command=lambda: threading.Thread(target=self.worker_restore_all, daemon=True).start()
-        ).pack(fill="x", padx=20, pady=16)
-
-        return frame
-
-    # ==================== 核心業務邏輯與背景工作執行緒 ====================
-
-    def action_scan_mdns(self):
-        def _scan():
-            self.log("正在透過 mDNS 掃描區域網路內的 Android 11~14 無線調試廣播...")
-            _, out, _ = run_adb(["mdns", "services"])
-            pair_found, conn_found = [], []
-            for line in out.splitlines():
-                m = re.search(r'(\d+\.\d+\.\d+\.\d+:\d+)', line)
-                if m:
-                    addr = m.group(1)
-                    if "_adb-tls-pairing._tcp" in line:
-                        pair_found.append(addr)
-                    elif "_adb-tls-connect._tcp" in line:
-                        conn_found.append(addr)
-            if pair_found:
-                self.log(f"[+] 發現正在等待配對的設備: {pair_found[0]}")
-                self.after(0, lambda: (self.pair_ip_entry.delete(0, "end"), self.pair_ip_entry.insert(0, pair_found[0])))
-            if conn_found:
-                self.log(f"[+] 發現可連線的無線調試埠: {conn_found[0]}")
-                self.after(0, lambda: (self.conn_ip_entry.delete(0, "end"), self.conn_ip_entry.insert(0, conn_found[0])))
-            if not pair_found and not conn_found:
-                self.log("[-] 未掃描到 mDNS 廣播，請直接手動輸入電視畫面上的 IP:Port。")
-        threading.Thread(target=_scan, daemon=True).start()
-
-    def action_pair_device(self):
-        pair_addr = self.pair_ip_entry.get().strip()
-        pair_code = self.pair_code_entry.get().strip()
-        if not pair_addr or not pair_code:
-            messagebox.showwarning("提示", "請輸入電視配對彈窗上的【IP:配對埠】與【6 位數配對碼】！")
-            return
-        def _pair():
-            self.log(f"正在向 {pair_addr} 發送配對碼 [{pair_code}] ...")
-            _, out, err = run_adb(["pair", pair_addr, pair_code])
-            combined = f"{out} {err}"
-            if "successfully paired" in combined.lower():
-                self.log("[√] 配對成功！電視彈窗應已自動關閉。請查看電視主頁面的連線埠進行步驟 2 連線。")
-                ip_only = pair_addr.split(":")[0]
-                self.after(0, lambda: (self.conn_ip_entry.delete(0, "end"), self.conn_ip_entry.insert(0, f"{ip_only}:")))
-            else:
-                self.log(f"[-] 配對失敗: {combined}")
-        threading.Thread(target=_pair, daemon=True).start()
-
-    def action_connect_device(self):
-        raw_target = self.conn_ip_entry.get().strip()
-        if not raw_target:
-            messagebox.showwarning("提示", "請輸入電視 IP 或 IP:連線埠！")
-            return
-        target = f"{raw_target}:5555" if ":" not in raw_target else raw_target
-
-        def _conn():
-            self.log(f"正在連線至 {target} ...")
-            _, out, err = run_adb(["connect", target])
-            time.sleep(1.5)
-            _, dev_out, _ = run_adb(["devices"])
-            if f"{target}\tunauthorized" in dev_out:
-                self.log("[!] 電視尚未授權！請看電視畫面勾選「永遠允許」並點擊確定...")
-                messagebox.showinfo("請在電視上確認授權", "請留意電視畫面彈出的偵錯授權視窗，\n勾選「永遠允許」並點擊確定後，按 OK 繼續。")
-                _, dev_out, _ = run_adb(["devices"])
-
-            if f"{target}\tdevice" in dev_out:
-                self.log(f"[√] 成功連接至電視: {target}")
-                pure_ip = target.split(":")[0]
-                self.cfg["last_tv_ip"] = pure_ip
-                save_config(self.cfg)
-
-                final_dev = target
-                if self.lock_5555_var.get() and not target.endswith(":5555"):
-                    self.log("[*] 正在將隨機埠固化為 5555 埠 (adb tcpip 5555)...")
-                    run_adb(["-s", target, "tcpip", "5555"])
-                    time.sleep(2)
-                    run_adb(["connect", f"{pure_ip}:5555"])
-                    _, dev_out2, _ = run_adb(["devices"])
-                    if f"{pure_ip}:5555\tdevice" in dev_out2:
-                        final_dev = f"{pure_ip}:5555"
-                        self.log(f"[√] 已成功切換並固定至 {final_dev}！")
-
-                self.set_connected_device(final_dev)
-            else:
-                self.log(f"[-] 連線失敗: {out} {err}")
-        threading.Thread(target=_conn, daemon=True).start()
-
-    # -------------------- 階段一：查詢並禁用所有第三方安裝限制與驗證包 --------------------
-    def worker_bypass_verification(self):
-        if not self.device_id:
-            messagebox.showwarning("未連線", "請先在「設備連線與配對」頁面連接電視！")
-            return False
-
-        self.log("=" * 55)
-        self.log("🔍 [步驟 1/2] 正在檢測並修改系統底層安裝限制參數 (Settings DB)...")
-
-        settings_cmds = [
-            ("global", "package_verifier_enable", "0", "關閉全域包驗證器"),
-            ("global", "verifier_verify_adb_installs", "0", "關閉 ADB 安裝驗證"),
-            ("secure", "install_non_market_apps", "1", "允許安裝未知來源應用")
-        ]
-
-        for namespace, key, target_val, desc in settings_cmds:
-            _, cur_val, _ = run_adb(["-s", self.device_id, "shell", "settings", "get", namespace, key])
-            run_adb(["-s", self.device_id, "shell", "settings", "put", namespace, key, target_val])
-            _, new_val, _ = run_adb(["-s", self.device_id, "shell", "settings", "get", namespace, key])
-            self.log(f"  ✅ {namespace} {key}: {cur_val} -> {new_val} ({desc})")
-
-        self.log("🔍 [步驟 2/2] 正在掃描電視內禁止安裝第三方應用的安全驗證套件...")
-        _, pkg_out, _ = run_adb(["-s", self.device_id, "shell", "pm", "list", "packages", "-e"])
-        installed_pkgs = [line.replace("package:", "").strip() for line in pkg_out.splitlines() if line.strip()]
-
-        detected_blockers = set()
-        for pkg in installed_pkgs:
-            if pkg in CORE_WHITELIST:
-                continue
-            if pkg in KNOWN_INSTALL_BLOCKERS or VERIFIER_REGEX.search(pkg):
-                detected_blockers.add(pkg)
-
-        if detected_blockers:
-            self.log(f"⚠️ 檢測到 {len(detected_blockers)} 個安裝攔截套件，正在全部強制禁用...")
-            for blocker in sorted(detected_blockers):
-                _, d_out, _ = run_adb(["-s", self.device_id, "shell", "pm", "disable-user", "--user", "0", blocker])
-                run_adb(["-s", self.device_id, "shell", "am", "force-stop", blocker])
-                self.log(f"    🚫 已禁用攔截器: {blocker} ({d_out})")
-        else:
-            self.log("✅ 未檢測到額外的廠商專屬 APK 攔截套件，系統驗證鎖已全面解除。")
-
-        self.log("=" * 55)
-        return True
-
-    # -------------------- 專項核心：強制接管 Android 14 桌面優先權並徹底封鎖 LauncherX --------------------
-    def _set_custom_launcher_as_default_and_kill_stock(self):
-        """動態解析編譯版 Launcher 的 Activity，設為預設 HOME 角色，並雙重停用/卸載原裝 LauncherX"""
-        self.log(f"🎯 正在為編譯版桌面 [{self.installed_launcher_pkg}] 申請最高 HOME 啟動優先權...")
-
-        # 1. 確保新桌面處於啟用狀態
-        run_adb(["-s", self.device_id, "shell", "pm", "enable", self.installed_launcher_pkg])
-
-        # 2. 動態查詢新桌面的真實 HOME Activity Component (例如 com.cleanyourtv.launcher/.MainActivity)
-        _, res_out, _ = run_adb([
-            "-s", self.device_id, "shell", "cmd", "package", "resolve-activity",
-            "--brief", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.HOME",
-            self.installed_launcher_pkg
-        ])
-        component = None
-        for line in res_out.splitlines():
-            line = line.strip()
-            if "/" in line and self.installed_launcher_pkg in line:
-                component = line
-                break
-        if not component:
-            component = f"{self.installed_launcher_pkg}/.MainActivity"
-
-        self.log(f"  • 解析到新桌面入口組件: {component}")
-
-        # 3. 透過 RoleManager 與 PackageManager 雙重綁定預設桌面角色 (Android 11~14 關鍵步驟)
-        run_adb(["-s", self.device_id, "shell", "cmd", "package", "set-home-activity", "--user", "0", component])
-        run_adb(["-s", self.device_id, "shell", "cmd", "role", "add-role-holder", "--user", "0", "android.app.role.HOME", self.installed_launcher_pkg])
-
-        # 4. 針對 STOCK_LAUNCHER_PKGS (特別是 setupwraith 與 com.google.android.apps.tv.launcherx) 執行三段式封鎖
-        self.log("🔨 正在強制停用原裝 Google TV 桌面 (launcherx) 與守護進程...")
-        for stock_pkg in STOCK_LAUNCHER_PKGS:
-            # 先看該原廠桌面是否存在於系統中
-            _, check_out, _ = run_adb(["-s", self.device_id, "shell", "pm", "path", stock_pkg])
-            if not check_out:
-                continue
-
-            # (a) 強制停止並清除其預設桌面權限
-            run_adb(["-s", self.device_id, "shell", "am", "force-stop", stock_pkg])
-            run_adb(["-s", self.device_id, "shell", "pm", "clear-package-preferred-activities", stock_pkg])
-
-            # (b) 執行系統級停用 (disable-user)
-            _, dis_out, dis_err = run_adb(["-s", self.device_id, "shell", "pm", "disable-user", "--user", "0", stock_pkg])
-
-            # (c) 若 Android 14 鎖定不允許 disable-user，或是為了徹底防止並存搶優先權，補刀執行當前用戶卸載 (uninstall -k --user 0)
-            _, un_out, _ = run_adb(["-s", self.device_id, "shell", "pm", "uninstall", "-k", "--user", "0", stock_pkg])
-
-            self.log(f"  🚫 已封鎖原裝桌面 [{stock_pkg}] -> 停用:{dis_out or dis_err} | 移除用戶層:{un_out}")
-
-        # 5. 再次鞏固新桌面預設地位並立即喚起新桌面到前台
-        run_adb(["-s", self.device_id, "shell", "cmd", "package", "set-home-activity", "--user", "0", component])
-        run_adb(["-s", self.device_id, "shell", "am", "start", "-n", component])
-        run_adb(["-s", self.device_id, "shell", "input", "keyevent", "KEYCODE_HOME"])
-        self.log("✅ 編譯版桌面已接管系統 HOME 鍵，原裝 LauncherX 已徹底停用！")
-
-    def worker_force_takeover_launcher(self):
-        if not self.device_id:
-            messagebox.showwarning("未連線", "請先連接電視！")
-            return
-        # 自動偵測電視上是否已安裝編譯版桌面
-        _, third_out, _ = run_adb(["-s", self.device_id, "shell", "pm", "list", "packages", "-3"])
-        installed_3rd = {l.replace("package:", "").strip() for l in third_out.splitlines() if l.strip()}
-        matched = installed_3rd & CUSTOM_LAUNCHER_PKGS
-        if matched:
-            self.installed_launcher_pkg = list(matched)[0]
-        self._set_custom_launcher_as_default_and_kill_stock()
-
-    # -------------------- 階段二：安裝 Gathin23 原生桌面 + 停用原方案肥大列表 --------------------
-    def worker_full_clean(self):
-        if not self.worker_bypass_verification():
-            return
-
-        _, before_out, _ = run_adb(["-s", self.device_id, "shell", "pm", "list", "packages", "-3"])
-        before_pkgs = {l.replace("package:", "").strip() for l in before_out.splitlines() if l.strip()}
-
-        launcher_ok = False
-        if os.path.exists(LAUNCHER_APK) and os.path.getsize(LAUNCHER_APK) > 1024:
-            self.log("🍎 正在安裝 Gathin23/cleanyourtv 原生 Apple TV 風格桌面...")
-            code, out, err = run_adb(["-s", self.device_id, "install", "-r", LAUNCHER_APK], timeout=90)
-            if code == 0 and "Success" in out:
-                launcher_ok = True
-                _, after_out, _ = run_adb(["-s", self.device_id, "shell", "pm", "list", "packages", "-3"])
-                after_pkgs = {l.replace("package:", "").strip() for l in after_out.splitlines() if l.strip()}
-                new_diff = after_pkgs - before_pkgs
-                if new_diff:
-                    actual_pkg = list(new_diff)[0]
-                    self.installed_launcher_pkg = actual_pkg
-                    CUSTOM_LAUNCHER_PKGS.add(actual_pkg)
-                    CORE_WHITELIST.add(actual_pkg)
-
-                self.log(f"  ✅ 原生桌面安裝成功！包名: [{self.installed_launcher_pkg}]")
-            else:
-                self.log(f"  ❌ 桌面安裝失敗 ({out} {err})，為防黑屏將保留原廠桌面！")
-        else:
-            self.log("⚠️ 未找到有效的內嵌 Launcher APK，將跳過停用原廠桌面。")
-
-        # 讀取右側面板中的原方案禁用清單
-        raw_list = self.default_bloat_textbox.get("1.0", "end").splitlines()
-        target_bloatware = [l.split("#")[0].strip() for l in raw_list if l.split("#")[0].strip() and "." in l]
-
-        self.log(f"🧹 正在執行原方案精簡清單 (共 {len(target_bloatware)} 項檢測)...")
-        disabled_count = 0
-        for pkg in target_bloatware:
-            if pkg in CORE_WHITELIST:
-                self.log(f"  [🛡️ 白名單保護] 跳過 {pkg}")
-                continue
-            if not launcher_ok and pkg in STOCK_LAUNCHER_PKGS:
-                self.log(f"  [跳過原廠桌面] {pkg}")
-                continue
-            _, out, _ = run_adb(["-s", self.device_id, "shell", "pm", "disable-user", "--user", "0", pkg])
-            if "disabled-user" in out:
-                disabled_count += 1
-                self.log(f"  [√] 已停用: {pkg}")
-
-        # 若新桌面安裝成功，立即執行專項強制接管與封殺 LauncherX
-        if launcher_ok:
-            self._set_custom_launcher_as_default_and_kill_stock()
-
-        self.log(f"🎉 全部流程執行完畢！共停用 {disabled_count} 個肥大組件，編譯版桌面已設為唯一預設桌面。")
-
-    # -------------------- 豆包 / WorkBuddy AI 分析與停用 --------------------
-    def action_start_ai_analysis(self):
-        if not self.device_id:
-            messagebox.showwarning("未連線", "請先連接電視！")
-            return
-
-        mode = "web" if "網頁" in self.ai_mode_seg.get() else "api"
-        self.cfg.update({
-            "mode": mode,
-            "web_url": self.web_url_entry.get().strip(),
-            "api_url": self.api_url_entry.get().strip(),
-            "model": self.api_model_entry.get().strip(),
-            "api_key": self.api_key_entry.get().strip()
-        })
-        save_config(self.cfg)
-
-        def _analyze():
-            self.log("正在從電視導出目前已啟用的套件清單 (已自動排除白名單與新桌面)...")
-            _, out, _ = run_adb(["-s", self.device_id, "shell", "pm", "list", "packages", "-e"])
-            pkgs = sorted([
-                l.replace("package:", "").strip()
-                for l in out.splitlines()
-                if l.strip() and l.replace("package:", "").strip() not in CORE_WHITELIST
-            ])
-            if not pkgs:
-                self.log("[-] 無法取得套件清單。")
-                return
-
-            prompt = (
-                "你是一位資深 Android TV / Google TV 系統精簡專家。以下是從電視導出的已啟用套件名。\n"
-                f"注意：千萬不要停用第三方桌面 ({', '.join(CUSTOM_LAUNCHER_PKGS)})。\n"
-                "請挑選出可 100% 安全停用的『預裝垃圾、廣告系統、廠商監控與多餘影音應用』，並在回覆最後將包名每行一個列在 [SAFE_DISABLE_START] 與 [SAFE_DISABLE_END] 之間：\n\n"
-                + "\n".join(pkgs)
-            )
-
-            if mode == "web":
-                self.clipboard_clear()
-                self.clipboard_append(prompt)
-                self.log(f"[+] 已將 {len(pkgs)} 個套件與分析提示詞複製到剪貼簿！正在打開瀏覽器...")
-                webbrowser.open(self.cfg["web_url"])
-                self.log("[提示] 請在打開的豆包/WorkBuddy網頁按 Ctrl+V 發送，再將 AI 輸出的包名貼到右側清單框內。")
-            else:
-                self.log(f"正在呼叫 API ({self.cfg['api_url']}) 進行深度分析...")
-                payload = {
-                    "model": self.cfg["model"],
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.1
-                }
-                req = urllib.request.Request(
-                    self.cfg["api_url"],
-                    data=json.dumps(payload).encode("utf-8"),
-                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.cfg['api_key']}"},
-                    method="POST"
-                )
-                try:
-                    with urllib.request.urlopen(req, timeout=60) as resp:
-                        reply = json.loads(resp.read().decode("utf-8"))["choices"][0]["message"]["content"]
-                        self.log("[√] AI 分析完成！")
-                        if "[SAFE_DISABLE_START]" in reply and "[SAFE_DISABLE_END]" in reply:
-                            block = reply.split("[SAFE_DISABLE_START]")[1].split("[SAFE_DISABLE_END]")[0].strip()
-                        else:
-                            block = reply
-                        self.after(0, lambda: (self.ai_pkg_textbox.delete("1.0", "end"), self.ai_pkg_textbox.insert("1.0", block)))
-                except Exception as e:
-                    self.log(f"[-] API 請求失敗: {e}")
-
-        threading.Thread(target=_analyze, daemon=True).start()
-
-    def action_apply_ai_disable(self):
-        if not self.device_id:
-            messagebox.showwarning("未連線", "請先連接電視！")
-            return
-        raw_text = self.ai_pkg_textbox.get("1.0", "end").strip()
-        pkgs = [l.strip() for l in raw_text.splitlines() if l.strip() and "." in l.strip() and not l.strip().startswith("[")]
-        if not pkgs:
-            messagebox.showwarning("清單為空", "右側文本框內沒有有效的套件名稱！")
-            return
-
-        def _disable():
-            self.log(f"開始批量停用 AI 建議的 {len(pkgs)} 個套件...")
-            for pkg in pkgs:
-                if pkg in CORE_WHITELIST or pkg in CUSTOM_LAUNCHER_PKGS:
-                    self.log(f"  [🛡️ 白名單保護] 已攔截並保護核心/新桌面套件: {pkg}")
-                    continue
-                _, out, _ = run_adb(["-s", self.device_id, "shell", "pm", "disable-user", "--user", "0", pkg])
-                self.log(f"  [√] {pkg} -> {out}")
-            self.log("🎉 AI 批量停用完成！")
-        threading.Thread(target=_disable, daemon=True).start()
-
-    # -------------------- 一鍵救磚還原 (支援完整恢復被卸載/停用的 LauncherX) --------------------
-    def worker_restore_all(self):
-        if not self.device_id:
-            messagebox.showwarning("未連線", "請先連接電視！")
-            return
-
-        self.log("正在恢復原裝 Google TV (launcherx) 與所有系統桌面組件...")
-        for stock in STOCK_LAUNCHER_PKGS:
-            # 1. 若曾執行 uninstall -k --user 0，先透過 install-existing 恢復到當前用戶
-            run_adb(["-s", self.device_id, "shell", "cmd", "package", "install-existing", stock])
-            # 2. 重新啟用 (enable)
-            run_adb(["-s", self.device_id, "shell", "pm", "enable", stock])
-
-        self.log("正在掃描並啟用所有處於 Disabled 狀態的套件...")
-        _, out, _ = run_adb(["-s", self.device_id, "shell", "pm", "list", "packages", "-d"])
-        disabled_pkgs = [l.replace("package:", "").strip() for l in out.splitlines() if l.strip()]
-
-        for pkg in disabled_pkgs:
-            run_adb(["-s", self.device_id, "shell", "pm", "enable", pkg])
-            self.log(f"  [√] 已重新啟用: {pkg}")
-
-        if self.uninstall_launcher_var.get():
-            self.log("正在卸載替換的第三方 Apple TV 桌面...")
-            for l_pkg in CUSTOM_LAUNCHER_PKGS:
-                _, u_out, _ = run_adb(["-s", self.device_id, "shell", "pm", "uninstall", l_pkg])
-                if "Success" in u_out:
-                    self.log(f"  [√] 已成功卸載新桌面: {l_pkg}")
-        else:
-            self.log(f"[🛡️ 已保留新桌面] {self.installed_launcher_pkg} 處於白名單保護狀態。")
-
-        run_adb(["-s", self.device_id, "shell", "input", "keyevent", "KEYCODE_HOME"])
-        self.log("🎉 電視已完全恢復為原廠 Google TV 初始狀態！")
-
-if __name__ == "__main__":
-    app = MacOSTVCleanerApp()
-    app.mainloop()
+        self.api_key_entry
