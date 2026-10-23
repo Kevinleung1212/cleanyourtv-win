@@ -1,4 +1,4 @@
-name: Build Native Launcher APK and Windows Standalone EXE
+name: Build Dual Launchers (CleanYourTV + Aerial TV) and Windows GUI
 
 on:
   push:
@@ -13,94 +13,121 @@ jobs:
       - name: 1. 檢出你的主專案程式碼 (main.py)
         uses: actions/checkout@v4
 
-      - name: 2. 檢出 Gathin23/cleanyourtv 原專案源碼
+      - name: 2. 檢出 Gathin23/cleanyourtv 源碼
         uses: actions/checkout@v4
         with:
           repository: Gathin23/cleanyourtv
           ref: c5d75e8e8071d6545e78ccbb6b4a303774f2e048
           path: cleanyourtv-src
 
-      - name: 3. 配置 JDK 17 環境
+      - name: 3. 檢出 pengchujin/aerial-tv 源碼
+        uses: actions/checkout@v4
+        with:
+          repository: pengchujin/aerial-tv
+          path: aerial-src
+
+      - name: 4. 配置 JDK 17 環境
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: 4. 編譯原生 Launcher APK 並自動提取真實包名
+      - name: 5. 編譯/獲取雙桌面 APK (CleanYourTV + Aerial TV) 並提取包名
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          $ProgressPreference = 'SilentlyContinue'
           New-Item -ItemType Directory -Force -Path "assets" | Out-Null
 
-          # 1. 自動從原專案源碼提取 applicationId / package name
-          $pkgName = "com.cleanyourtv.launcher"
-          $gradleFiles = Get-ChildItem -Path "cleanyourtv-src/launcher" -Include "build.gradle", "build.gradle.kts", "AndroidManifest.xml" -Recurse
-          foreach ($f in $gradleFiles) {
-            $content = Get-Content $f.FullName -Raw
-            if ($content -match 'applicationId\s*[= ]\s*["'']([^"'']+)["'']') {
-              $pkgName = $matches[1]
-              break
-            } elseif ($content -match 'package\s*=\s*["'']([^"'']+)["'']') {
-              $pkgName = $matches[1]
-              break
+          # --- A. 處理 Gathin23/cleanyourtv 桌面 ---
+          $cleanPkg = "com.cleanyourtv.launcher"
+          $gFiles = Get-ChildItem -Path "cleanyourtv-src/launcher" -Include "build.gradle", "build.gradle.kts", "AndroidManifest.xml" -Recurse
+          foreach ($f in $gFiles) {
+            $c = Get-Content $f.FullName -Raw
+            if ($c -match 'applicationId\s*[= ]\s*["'']([^"'']+)["'']') { $cleanPkg = $matches[1]; break }
+          }
+          Set-Content -Path "assets/cleanyourtv_pkg.txt" -Value $cleanPkg -NoNewline
+
+          Push-Location "cleanyourtv-src/launcher"
+          if (Test-Path "./gradlew.bat") { ./gradlew.bat assembleDebug --no-daemon } else { gradle assembleDebug --no-daemon }
+          Pop-Location
+          $cleanApk = Get-ChildItem -Path "cleanyourtv-src/launcher" -Filter "*-debug.apk" -Recurse | Select-Object -First 1
+          Copy-Item -Path $cleanApk.FullName -Destination "assets/cleanyourtv_launcher.apk" -Force
+          Write-Host "[+] CleanYourTV 桌面準備完成 ($cleanPkg)"
+
+          # --- B. 處理 pengchujin/aerial-tv 桌面 ---
+          $aerialPkg = "me.qust.aerial"
+          $aFiles = Get-ChildItem -Path "aerial-src" -Include "build.gradle", "build.gradle.kts", "AndroidManifest.xml" -Recurse
+          foreach ($f in $aFiles) {
+            $c = Get-Content $f.FullName -Raw
+            if ($c -match 'applicationId\s*[= ]\s*["'']([^"'']+)["'']') { $aerialPkg = $matches[1]; break }
+            elseif ($c -match 'namespace\s*[= ]\s*["'']([^"'']+)["'']') { $aerialPkg = $matches[1] }
+          }
+          Set-Content -Path "assets/aerial_pkg.txt" -Value $aerialPkg -NoNewline
+
+          $aerialDownloaded = $false
+          try {
+            $headers = @{ "User-Agent" = "GitHubActions"; "Authorization" = "Bearer ${{ secrets.GITHUB_TOKEN }}" }
+            $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/pengchujin/aerial-tv/releases/latest" -Headers $headers
+            # 優先選擇標準版 .apk (排除特殊 guard 變體或優先取第一個標準 apk)
+            $apkAsset = $rel.assets | Where-Object { $_.name -match "\.apk$" } | Select-Object -First 1
+            if ($apkAsset) {
+              Write-Host "正在從 Releases 下載 Aerial TV APK: $($apkAsset.browser_download_url)"
+              Invoke-WebRequest -Uri $apkAsset.browser_download_url -OutFile "assets/aerial_launcher.apk" -UseBasicParsing
+              $aerialDownloaded = $true
+            }
+          } catch {
+            Write-Host "Releases 未找到現成 APK，切換為從 aerial-src 源碼本地編譯..."
+          }
+
+          if (-not $aerialDownloaded) {
+            Push-Location "aerial-src"
+            if (Test-Path "./gradlew.bat") { ./gradlew.bat assembleDebug --no-daemon } else { gradle assembleDebug --no-daemon }
+            Pop-Location
+            $builtAerial = Get-ChildItem -Path "aerial-src" -Filter "*.apk" -Recurse | Select-Object -First 1
+            if ($builtAerial) {
+              Copy-Item -Path $builtAerial.FullName -Destination "assets/aerial_launcher.apk" -Force
+            } else {
+              Set-Content -Path "assets/aerial_launcher.apk" -Value "placeholder"
             }
           }
-          Write-Host "[+] 識別到原生 Launcher 包名: $pkgName"
-          Set-Content -Path "assets/launcher_pkg.txt" -Value $pkgName -NoNewline
+          Write-Host "[+] Aerial TV 桌面準備完成 ($aerialPkg)"
 
-          # 2. 使用 Gradle 編譯已簽名的 Debug APK
-          Push-Location "cleanyourtv-src/launcher"
-          if (Test-Path "./gradlew.bat") {
-            ./gradlew.bat assembleDebug --no-daemon
-          } else {
-            gradle assembleDebug --no-daemon
-          }
-          Pop-Location
-
-          $apkFile = Get-ChildItem -Path "cleanyourtv-src/launcher" -Filter "*-debug.apk" -Recurse | Select-Object -First 1
-          if ($apkFile) {
-            Write-Host "[+] 成功編譯原生 Launcher APK: $($apkFile.FullName)"
-            Copy-Item -Path $apkFile.FullName -Destination "assets/launcher.apk" -Force
-          } else {
-            throw "找不到編譯輸出的 APK 檔案！"
-          }
-
-      - name: 5. 配置 Python 3.11 環境
+      - name: 6. 配置 Python 3.11 環境並下載 ADB
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: 6. 下載 Google 官方 ADB 工具
+      - name: 7. 下載 Google 官方 Platform-Tools (ADB)
         shell: pwsh
         run: |
           $ProgressPreference = 'SilentlyContinue'
           Invoke-WebRequest -Uri "https://dl.google.com/android/repository/platform-tools-latest-windows.zip" -OutFile "platform-tools.zip" -UseBasicParsing
           Expand-Archive -Path "platform-tools.zip" -DestinationPath "." -Force
 
-      - name: 7. 安裝 PyInstaller 與 CustomTkinter
+      - name: 8. 安裝 PyInstaller 與 CustomTkinter 並封裝 EXE
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
           pip install pyinstaller customtkinter packaging
-
-      - name: 8. 封裝為內嵌原生 Launcher 的獨立 EXE
-        shell: pwsh
-        run: |
           pyinstaller --noconfirm --onefile --windowed `
             --name "CleanYourTV_macOS_GUI" `
             --collect-all customtkinter `
             --add-binary "platform-tools/adb.exe;platform-tools" `
             --add-binary "platform-tools/AdbWinApi.dll;platform-tools" `
             --add-binary "platform-tools/AdbWinUsbApi.dll;platform-tools" `
-            --add-data "assets/launcher.apk;assets" `
-            --add-data "assets/launcher_pkg.txt;assets" `
+            --add-data "assets/cleanyourtv_launcher.apk;assets" `
+            --add-data "assets/aerial_launcher.apk;assets" `
+            --add-data "assets/cleanyourtv_pkg.txt;assets" `
+            --add-data "assets/aerial_pkg.txt;assets" `
             main.py
 
-      - name: 9. 上傳編譯完成的 APK 與 EXE 構建產物 (Artifacts)
+      - name: 9. 上傳編譯完成的雙桌面 EXE 與 APK 產物
         uses: actions/upload-artifact@v4
         with:
-          name: CleanYourTV-NativeLauncher-Bundle
+          name: CleanYourTV-DualLauncher-Bundle
           path: |
             dist/CleanYourTV_macOS_GUI.exe
-            assets/launcher.apk
+            assets/cleanyourtv_launcher.apk
+            assets/aerial_launcher.apk
           if-no-files-found: error
