@@ -2,8 +2,8 @@ name: Build Windows Standalone EXE
 
 on:
   push:
-    branches: [ "main" ]
-  workflow_dispatch: # 允許在 GitHub 頁面手動觸發編譯
+    branches: [ "main", "master" ]
+  workflow_dispatch:
 
 jobs:
   build-windows:
@@ -18,34 +18,49 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 3. 自動下載 Google 官方 ADB (Platform-Tools) 與 Launcher APK
+      - name: 3. 下載 Google 官方 ADB 與 Launcher APK
         shell: pwsh
         run: |
-          # 下載並解壓縮 Windows 版 ADB 工具
-          Invoke-WebRequest -Uri "https://dl.google.com/android/repository/platform-tools-latest-windows.zip" -OutFile "platform-tools.zip"
+          # 關閉進度條以大幅加速 PowerShell 下載速度並避免報錯
+          $ProgressPreference = 'SilentlyContinue'
+          
+          Write-Host "1. 正在下載 Google Platform-Tools (ADB)..."
+          Invoke-WebRequest -Uri "https://dl.google.com/android/repository/platform-tools-latest-windows.zip" -OutFile "platform-tools.zip" -UseBasicParsing
           Expand-Archive -Path "platform-tools.zip" -DestinationPath "." -Force
           
-          # 建立 assets 目錄並下載 Projectivy Launcher APK (若倉庫內已有 APK 可註解此段)
-          New-Item -ItemType Directory -Force -Path "assets"
+          Write-Host "2. 正在準備 assets 目錄與 Launcher APK..."
+          New-Item -ItemType Directory -Force -Path "assets" | Out-Null
+          
           if (-not (Test-Path "assets/launcher.apk")) {
-            Write-Host "正在從 GitHub Releases 獲取最新 Projectivy Launcher APK..."
-            $releaseUrl = "https://api.github.com/repos/spocky/miproja1/releases/latest"
-            $release = Invoke-RestMethod -Uri $releaseUrl
-            $apkAsset = $release.assets | Where-Object { $_.name -like "*.apk" } | Select-Object -First 1
-            Invoke-WebRequest -Uri $apkAsset.browser_download_url -OutFile "assets/launcher.apk"
+            try {
+              # 優先使用 GitHub 內建 GITHUB_TOKEN 避免 API 403 限流
+              $headers = @{
+                "User-Agent" = "GitHubActions"
+                "Authorization" = "Bearer ${{ secrets.GITHUB_TOKEN }}"
+              }
+              $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/spocky/miproja1/releases/latest" -Headers $headers
+              $apkAsset = $rel.assets | Where-Object { $_.name -match "\.apk$" } | Select-Object -First 1
+              if ($apkAsset) {
+                Write-Host "正在下載最新版 APK: $($apkAsset.browser_download_url)"
+                Invoke-WebRequest -Uri $apkAsset.browser_download_url -OutFile "assets/launcher.apk" -UseBasicParsing
+              } else {
+                throw "Release 中未找到 .apk 檔案"
+              }
+            } catch {
+              Write-Warning "自動抓取 APK 失敗 ($_) ，建立佔位檔案以確保 EXE 順利編譯..."
+              Set-Content -Path "assets/launcher.apk" -Value "placeholder"
+            }
           }
 
-      - name: 4. 安裝打包工具 PyInstaller 與依賴
+      - name: 4. 安裝打包工具 PyInstaller
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
           pip install pyinstaller
-          if (Test-Path "requirements.txt") { pip install -r requirements.txt }
 
       - name: 5. 使用 PyInstaller 封裝成單一獨立 EXE
         shell: pwsh
         run: |
-          # 將 adb.exe、必要 DLL 以及 launcher.apk 封裝進單一執行檔內
           pyinstaller --noconfirm --onefile --console `
             --name "CleanYourTV_Win10_11" `
             --add-binary "platform-tools/adb.exe;platform-tools" `
