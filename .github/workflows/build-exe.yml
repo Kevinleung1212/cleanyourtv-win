@@ -1,4 +1,4 @@
-name: Build Launcher APK and Windows Standalone EXE
+name: Build Native Launcher APK and Windows Standalone EXE
 
 on:
   push:
@@ -13,40 +13,53 @@ jobs:
       - name: 1. 檢出你的主專案程式碼 (main.py)
         uses: actions/checkout@v4
 
-      - name: 2. 檢出 Gathin23/cleanyourtv 原專案源碼至設定目錄
+      - name: 2. 檢出 Gathin23/cleanyourtv 原專案源碼
         uses: actions/checkout@v4
         with:
           repository: Gathin23/cleanyourtv
           ref: c5d75e8e8071d6545e78ccbb6b4a303774f2e048
           path: cleanyourtv-src
 
-      - name: 3. 配置 JDK 17 環境 (編譯 Android APK 必備)
+      - name: 3. 配置 JDK 17 環境
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: 4. 編譯 Gathin23/cleanyourtv/launcher 為可安裝 APK
+      - name: 4. 編譯原生 Launcher APK 並自動提取真實包名
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          Write-Host "正在進入 launcher 目錄並使用 Gradle 編譯 APK..."
+          New-Item -ItemType Directory -Force -Path "assets" | Out-Null
+
+          # 1. 自動從原專案源碼提取 applicationId / package name
+          $pkgName = "com.cleanyourtv.launcher"
+          $gradleFiles = Get-ChildItem -Path "cleanyourtv-src/launcher" -Include "build.gradle", "build.gradle.kts", "AndroidManifest.xml" -Recurse
+          foreach ($f in $gradleFiles) {
+            $content = Get-Content $f.FullName -Raw
+            if ($content -match 'applicationId\s*[= ]\s*["'']([^"'']+)["'']') {
+              $pkgName = $matches[1]
+              break
+            } elseif ($content -match 'package\s*=\s*["'']([^"'']+)["'']') {
+              $pkgName = $matches[1]
+              break
+            }
+          }
+          Write-Host "[+] 識別到原生 Launcher 包名: $pkgName"
+          Set-Content -Path "assets/launcher_pkg.txt" -Value $pkgName -NoNewline
+
+          # 2. 使用 Gradle 編譯已簽名的 Debug APK
           Push-Location "cleanyourtv-src/launcher"
-          
-          # 若原倉庫包含 gradlew.bat 則直接呼叫，否則使用系統內建 gradle
           if (Test-Path "./gradlew.bat") {
             ./gradlew.bat assembleDebug --no-daemon
           } else {
             gradle assembleDebug --no-daemon
           }
           Pop-Location
-          
-          # 建立 assets 目錄並提取編譯好的已簽名 APK
-          New-Item -ItemType Directory -Force -Path "assets" | Out-Null
+
           $apkFile = Get-ChildItem -Path "cleanyourtv-src/launcher" -Filter "*-debug.apk" -Recurse | Select-Object -First 1
-          
           if ($apkFile) {
-            Write-Host "[+] 成功編譯 Launcher APK: $($apkFile.FullName)"
+            Write-Host "[+] 成功編譯原生 Launcher APK: $($apkFile.FullName)"
             Copy-Item -Path $apkFile.FullName -Destination "assets/launcher.apk" -Force
           } else {
             throw "找不到編譯輸出的 APK 檔案！"
@@ -61,7 +74,6 @@ jobs:
         shell: pwsh
         run: |
           $ProgressPreference = 'SilentlyContinue'
-          Write-Host "正在下載 Google Platform-Tools (ADB)..."
           Invoke-WebRequest -Uri "https://dl.google.com/android/repository/platform-tools-latest-windows.zip" -OutFile "platform-tools.zip" -UseBasicParsing
           Expand-Archive -Path "platform-tools.zip" -DestinationPath "." -Force
 
@@ -81,12 +93,13 @@ jobs:
             --add-binary "platform-tools/AdbWinApi.dll;platform-tools" `
             --add-binary "platform-tools/AdbWinUsbApi.dll;platform-tools" `
             --add-data "assets/launcher.apk;assets" `
+            --add-data "assets/launcher_pkg.txt;assets" `
             main.py
 
       - name: 9. 上傳編譯完成的 APK 與 EXE 構建產物 (Artifacts)
         uses: actions/upload-artifact@v4
         with:
-          name: CleanYourTV-Full-Bundle
+          name: CleanYourTV-NativeLauncher-Bundle
           path: |
             dist/CleanYourTV_macOS_GUI.exe
             assets/launcher.apk
