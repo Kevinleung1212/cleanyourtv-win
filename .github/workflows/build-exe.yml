@@ -21,19 +21,15 @@ jobs:
       - name: 3. 下載 Google 官方 ADB 與 Launcher APK
         shell: pwsh
         run: |
-          # 關閉進度條以大幅加速 PowerShell 下載速度並避免報錯
           $ProgressPreference = 'SilentlyContinue'
-          
           Write-Host "1. 正在下載 Google Platform-Tools (ADB)..."
           Invoke-WebRequest -Uri "https://dl.google.com/android/repository/platform-tools-latest-windows.zip" -OutFile "platform-tools.zip" -UseBasicParsing
           Expand-Archive -Path "platform-tools.zip" -DestinationPath "." -Force
           
           Write-Host "2. 正在準備 assets 目錄與 Launcher APK..."
           New-Item -ItemType Directory -Force -Path "assets" | Out-Null
-          
           if (-not (Test-Path "assets/launcher.apk")) {
             try {
-              # 優先使用 GitHub 內建 GITHUB_TOKEN 避免 API 403 限流
               $headers = @{
                 "User-Agent" = "GitHubActions"
                 "Authorization" = "Bearer ${{ secrets.GITHUB_TOKEN }}"
@@ -41,28 +37,25 @@ jobs:
               $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/spocky/miproja1/releases/latest" -Headers $headers
               $apkAsset = $rel.assets | Where-Object { $_.name -match "\.apk$" } | Select-Object -First 1
               if ($apkAsset) {
-                Write-Host "正在下載最新版 APK: $($apkAsset.browser_download_url)"
                 Invoke-WebRequest -Uri $apkAsset.browser_download_url -OutFile "assets/launcher.apk" -UseBasicParsing
-              } else {
-                throw "Release 中未找到 .apk 檔案"
-              }
+              } else { throw "No APK found" }
             } catch {
-              Write-Warning "自動抓取 APK 失敗 ($_) ，建立佔位檔案以確保 EXE 順利編譯..."
               Set-Content -Path "assets/launcher.apk" -Value "placeholder"
             }
           }
 
-      - name: 4. 安裝打包工具 PyInstaller
+      - name: 4. 安裝 PyInstaller 與 macOS GUI 庫 (CustomTkinter)
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller
+          pip install pyinstaller customtkinter packaging
 
-      - name: 5. 使用 PyInstaller 封裝成單一獨立 EXE
+      - name: 5. 封裝為 macOS 風格獨立視窗程式 (無黑窗 GUI)
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --onefile --console `
-            --name "CleanYourTV_Win10_11" `
+          pyinstaller --noconfirm --onefile --windowed `
+            --name "CleanYourTV_macOS_GUI" `
+            --collect-all customtkinter `
             --add-binary "platform-tools/adb.exe;platform-tools" `
             --add-binary "platform-tools/AdbWinApi.dll;platform-tools" `
             --add-binary "platform-tools/AdbWinUsbApi.dll;platform-tools" `
@@ -72,6 +65,6 @@ jobs:
       - name: 6. 上傳編譯完成的 EXE 構建產物 (Artifacts)
         uses: actions/upload-artifact@v4
         with:
-          name: CleanYourTV-Windows-Standalone
-          path: dist/CleanYourTV_Win10_11.exe
+          name: CleanYourTV-macOS-GUI-Standalone
+          path: dist/CleanYourTV_macOS_GUI.exe
           if-no-files-found: error
